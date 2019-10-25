@@ -147,18 +147,38 @@ func (p *Project) StartPreVM(ctx context.Context) MachineResponse {
 		return MachineResponse{err.Error()}
 	}
 
-	// Initialize the Master node
-	p.Machines.Master.Name = fmt.Sprintf("%s-gelato-master", p.ProjectID)
-
 	// Create Master VM
-	if err := p.createInstance(ctx, computeService); err != nil {
+	p.Machines.Master.Name = fmt.Sprintf("%s-gelato-master", p.ProjectID)
+	if err := p.createInstance(ctx, computeService, p.Machines.Master.Name); err != nil {
+		return MachineResponse{err.Error()}
+	}
+	// Query Master VM to get IP address
+	p.Machines.Master.IPAddress, err = p.getComputeInstID(ctx, computeService, p.Machines.Master.Name)
+	if err != nil {
 		return MachineResponse{err.Error()}
 	}
 
-	// Query Master VM to get IP address
-	// TODO: split query into master and slave version
-	if err := p.getComputeInstID(ctx, computeService, p.Machines.Master.Name); err != nil {
-		return MachineResponse{err.Error()}
+	// Allocate slave machines
+	p.Machines.Slave = make([]MachineAddress, 0)
+	// Setup slave machines
+	for i := 0; i < p.MachineSetup.Number; i++ {
+		nSlaveName := fmt.Sprintf("%s-gelato-slave-%d", p.ProjectID, i)
+		if err := p.createInstance(ctx, computeService, nSlaveName); err != nil {
+			return MachineResponse{err.Error()}
+		}
+		nSlaveIP, err := p.getComputeInstID(ctx, computeService, nSlaveName)
+		if err != nil {
+			return MachineResponse{err.Error()}
+		}
+
+		// New slave machine
+		nSlave := MachineAddress{
+			Name:      nSlaveName,
+			IPAddress: nSlaveIP,
+		}
+
+		// Add to the machine list
+		p.Machines.Slave = append(p.Machines.Slave, nSlave)
 	}
 
 	return MachineResponse{"Success!"}
@@ -166,7 +186,8 @@ func (p *Project) StartPreVM(ctx context.Context) MachineResponse {
 
 // createInstance starts a preemptive GCE Instance with configs specified by
 // instance and which runs the specified startup script
-func (p *Project) createInstance(ctx context.Context, computeService *compute.Service) error {
+func (p *Project) createInstance(ctx context.Context, computeService *compute.Service, MachineName string) error {
+
 	// Setup image
 	img, err := computeService.Images.GetFromFamily(p.MachineSetup.ImageProject,
 		p.MachineSetup.ImageFamily).Context(ctx).Do()
@@ -178,7 +199,7 @@ func (p *Project) createInstance(ctx context.Context, computeService *compute.Se
 	// Setup instance
 	op, err := computeService.Instances.Insert(p.ProjectID, p.Zone, &compute.Instance{
 		MachineType: fmt.Sprintf("zones/%s/machineTypes/%s", p.Zone, p.MachineSetup.MType),
-		Name:        p.Machines.Master.Name,
+		Name:        MachineName,
 		Disks: []*compute.AttachedDisk{{
 			AutoDelete: true, // delete the disk when the VM is deleted.
 			Boot:       true,
@@ -250,14 +271,13 @@ func checkOpErrors(op *compute.Operation) error {
 }
 
 // Get the external IP address of an instance
-func (p *Project) getComputeInstID(ctx context.Context, computeService *compute.Service, machineName string) error {
+func (p *Project) getComputeInstID(ctx context.Context, computeService *compute.Service, machineName string) (string, error) {
+
 	cpsReturn, err := computeService.Instances.Get(p.ProjectID, p.Zone, machineName).Do()
 
 	if err != nil {
-		return err
+		return "", err
 	}
 
-	p.Machines.Master.IPAddress = cpsReturn.NetworkInterfaces[0].AccessConfigs[0].NatIP
-
-	return nil
+	return cpsReturn.NetworkInterfaces[0].AccessConfigs[0].NatIP, nil
 }
