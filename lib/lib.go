@@ -140,20 +140,34 @@ func (p *Project) createBucket(ctx context.Context, client *storage.Client) erro
 
 // Start a preemptive VM instance
 func (p *Project) StartPreVM(ctx context.Context) MachineResponse {
+	// Create Master node
 	computeService, err := compute.NewService(ctx)
+
 	if err != nil {
 		return MachineResponse{err.Error()}
 	}
+
+	// Initialize the Master node
+	p.Machines.Master.Name = fmt.Sprintf("%s-gelato-master", p.ProjectID)
+
+	// Create Master VM
 	if err := p.createInstance(ctx, computeService); err != nil {
 		return MachineResponse{err.Error()}
 	}
+
+	// Query Master VM to get IP address
+	// TODO: split query into master and slave version
+	if err := p.getComputeInstID(ctx, computeService, p.Machines.Master.Name); err != nil {
+		return MachineResponse{err.Error()}
+	}
+
 	return MachineResponse{"Success!"}
 }
 
 // createInstance starts a preemptive GCE Instance with configs specified by
 // instance and which runs the specified startup script
 func (p *Project) createInstance(ctx context.Context, computeService *compute.Service) error {
-	// https://github.com/googleapis/google-cloud-go/blob/6eb68c76412695497cbee012537088b100c8fa25/profiler/proftest/proftest.go
+	// Setup image
 	img, err := computeService.Images.GetFromFamily(p.MachineSetup.ImageProject,
 		p.MachineSetup.ImageFamily).Context(ctx).Do()
 
@@ -161,7 +175,7 @@ func (p *Project) createInstance(ctx context.Context, computeService *compute.Se
 		return err
 	}
 
-	p.Machines.Master.Name = fmt.Sprintf("%s-gelato-master", p.ProjectID)
+	// Setup instance
 	op, err := computeService.Instances.Insert(p.ProjectID, p.Zone, &compute.Instance{
 		MachineType: fmt.Sprintf("zones/%s/machineTypes/%s", p.Zone, p.MachineSetup.MType),
 		Name:        p.Machines.Master.Name,
@@ -233,4 +247,17 @@ func checkOpErrors(op *compute.Operation) error {
 		}
 	}
 	return errors.New(strings.Join(errs, ","))
+}
+
+// Get the external IP address of an instance
+func (p *Project) getComputeInstID(ctx context.Context, computeService *compute.Service, machineName string) error {
+	cpsReturn, err := computeService.Instances.Get(p.ProjectID, p.Zone, machineName).Do()
+
+	if err != nil {
+		return err
+	}
+
+	p.Machines.Master.IPAddress = cpsReturn.NetworkInterfaces[0].AccessConfigs[0].NatIP
+
+	return nil
 }
