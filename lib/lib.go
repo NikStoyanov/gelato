@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"cloud.google.com/go/storage"
@@ -138,47 +139,85 @@ func (p *Project) createBucket(ctx context.Context, client *storage.Client) erro
 	return nil
 }
 
-// Start a preemptive VM instance
+// Start a preemptive VM instance. First the master node is initiated and if successful the slave
+// nodes are started concurrently.
 func (p *Project) StartPreVM(ctx context.Context) MachineResponse {
-	// Create Master node
-	computeService, err := compute.NewService(ctx)
+	// Setup error channel and wait group for track the start of the new slave machines.
+	errChannel := make(chan error, 1)
+	var wg sync.WaitGroup
+	wg.Add(p.MachineSetup.Number)
+	setupFin := make(chan bool, 1)
 
+	// GCP does not create machines in the order at which they are requested. When a new machine
+	// is started the information associated with is must be appended in a thread safe manner.
+	// The mutex will prevent the race condition when a machine is becomes available.
+	mux := &sync.Mutex{}
+
+	// Create Master node.
+	computeService, err := compute.NewService(ctx)
 	if err != nil {
 		return MachineResponse{err.Error()}
 	}
 
-	// Create Master VM
+	// Create Master VM and wait for it to be established. We need this node to be working
+	// before we can proceed to the slaves nodes as they must exchange ssh keys.
 	p.Machines.Master.Name = fmt.Sprintf("%s-gelato-master", p.ProjectID)
 	if err := p.createInstance(ctx, computeService, p.Machines.Master.Name); err != nil {
 		return MachineResponse{err.Error()}
 	}
+
 	// Query Master VM to get IP address
 	p.Machines.Master.IPAddress, err = p.getComputeInstID(ctx, computeService, p.Machines.Master.Name)
 	if err != nil {
 		return MachineResponse{err.Error()}
 	}
 
-	// Allocate slave machines
+	// Allocate slave machines.
 	p.Machines.Slave = make([]MachineAddress, 0)
-	// Setup slave machines
-	for i := 0; i < p.MachineSetup.Number; i++ {
-		nSlaveName := fmt.Sprintf("%s-gelato-slave-%d", p.ProjectID, i)
-		if err := p.createInstance(ctx, computeService, nSlaveName); err != nil {
-			return MachineResponse{err.Error()}
-		}
-		nSlaveIP, err := p.getComputeInstID(ctx, computeService, nSlaveName)
+
+	// Concurrently setup slave machines.
+	for machineNum := 0; machineNum < p.MachineSetup.Number; machineNum++ {
+		go func(machineNum int) {
+			// New slave machine ID.
+			nSlaveName := fmt.Sprintf("%s-gelato-slave-%d", p.ProjectID, machineNum)
+
+			// Create slave instace.
+			if err := p.createInstance(ctx, computeService, nSlaveName); err != nil {
+				errChannel <- err
+			}
+
+			// Obtain the assigned ID of the slave instance.
+			nSlaveIP, err := p.getComputeInstID(ctx, computeService, nSlaveName)
+			if err != nil {
+				errChannel <- err
+			}
+
+			// Record new slave machine.
+			nSlave := MachineAddress{
+				Name:      nSlaveName,
+				IPAddress: nSlaveIP,
+			}
+
+			// Add to the machine list.
+			mux.Lock()
+			p.Machines.Slave = append(p.Machines.Slave, nSlave)
+			mux.Unlock()
+			wg.Done()
+		}(machineNum)
+	}
+
+	// Wait for error to occur and either report it or wait for all of them to be closed.
+	go func() {
+		wg.Wait()
+		close(setupFin)
+	}()
+
+	select {
+	case <-setupFin:
+	case err := <-errChannel:
 		if err != nil {
 			return MachineResponse{err.Error()}
 		}
-
-		// New slave machine
-		nSlave := MachineAddress{
-			Name:      nSlaveName,
-			IPAddress: nSlaveIP,
-		}
-
-		// Add to the machine list
-		p.Machines.Slave = append(p.Machines.Slave, nSlave)
 	}
 
 	return MachineResponse{"Success!"}
@@ -186,7 +225,7 @@ func (p *Project) StartPreVM(ctx context.Context) MachineResponse {
 
 // createInstance starts a preemptive GCE Instance with configs specified by
 // instance and which runs the specified startup script
-func (p *Project) createInstance(ctx context.Context, computeService *compute.Service, MachineName string) error {
+func (p *Project) createInstance(ctx context.Context, computeService *compute.Service, machineName string) error {
 
 	// Setup image
 	img, err := computeService.Images.GetFromFamily(p.MachineSetup.ImageProject,
@@ -199,7 +238,7 @@ func (p *Project) createInstance(ctx context.Context, computeService *compute.Se
 	// Setup instance
 	op, err := computeService.Instances.Insert(p.ProjectID, p.Zone, &compute.Instance{
 		MachineType: fmt.Sprintf("zones/%s/machineTypes/%s", p.Zone, p.MachineSetup.MType),
-		Name:        MachineName,
+		Name:        machineName,
 		Disks: []*compute.AttachedDisk{{
 			AutoDelete: true, // delete the disk when the VM is deleted.
 			Boot:       true,
