@@ -32,7 +32,14 @@ func runSetup() {
 	ctx := context.Background()
 	p.SetupDefaults()
 	fmt.Println(p.SetupBucket(ctx))
+	fmt.Println(p.SetupMsg(ctx))
 	fmt.Println(p.StartPreVM(ctx))
+}
+
+func stopSetup() {
+	// Stop the running VM instances.
+	ctx := context.Background()
+	p.StopVM(ctx)
 }
 
 func main() {

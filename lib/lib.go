@@ -336,3 +336,54 @@ func (p *Project) getComputeInstID(ctx context.Context, computeService *compute.
 
 	return cpsReturn.NetworkInterfaces[0].AccessConfigs[0].NatIP, nil
 }
+
+// https://cloud.google.com/compute/docs/reference/rest/v1/instances/list
+// List registered VM instances.
+func (p *Project) ListVM(ctx context.Context, computeService *compute.Service) *compute.InstanceList {
+	req := computeService.Instances.List(p.ProjectID, p.Zone)
+	var vms *compute.InstanceList
+	if err := req.Pages(ctx, func(page *compute.InstanceList) error {
+		vms = page
+		return nil
+	}); err != nil {
+		log.Fatal(err)
+	}
+
+	return vms
+}
+
+// Print the registered VM instances.
+func (p *Project) PrintVM(ctx context.Context, computeService *compute.Service) MachineResponse {
+	vms := p.ListVM(ctx, computeService)
+	for _, instance := range vms.Items {
+		fmt.Printf("%#v\n", instance)
+	}
+
+	return MachineResponse{"Success!"}
+}
+
+// Stop the running VM instances.
+func (p *Project) StopVM(ctx context.Context, computeService *compute.Service) MachineResponse {
+	vms := p.ListVM(ctx, computeService)
+	for _, instance := range vms.Items {
+		_, err := computeService.Instances.Stop(p.ProjectID, p.Zone, instance.Hostname).Context(ctx).Do()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	return MachineResponse{"Success!"}
+}
+
+// Delete registered VM instances.
+func (p *Project) DeleteVM(ctx context.Context, computeService *compute.Service) MachineResponse {
+	vms := p.ListVM(ctx, computeService)
+	for _, instance := range vms.Items {
+		_, err := computeService.Instances.Delete(p.ProjectID, p.Zone, instance.Hostname).Context(ctx).Do()
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	return MachineResponse{"Success!"}
+}
