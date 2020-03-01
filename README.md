@@ -11,3 +11,10 @@ Then run gclous to generate the authentication file:
 ```
 gcloud auth application-default login
 ```
+
+# PubSub
+Enable the PubSup API on GCP and create a topic with
+
+```
+gcloud pubsub topics create Gelato
+```

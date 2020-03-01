@@ -10,16 +10,17 @@ import (
 	"github.com/urfave/cli"
 )
 
+var p *lib.Project
+
 func runSetup() {
 	// Create Machine
 	var m lib.Machine
 	m = lib.Machine{
 		Number:        2,
-		StartupScript: "curl -O https://julialang-s3.julialang.org/bin/linux/x64/1.2/julia-1.2.0-linux-x86_64.tar.gz | tar xfv julia-1.2.0-linux-x86_64.tar.gz",
+		StartupScript: "#! /bin/bash\n\ncat <<EOF > ~/setup\nStartup script!",
 	}
 
 	// Create project
-	var p *lib.Project
 	p = &lib.Project{
 		ProjectID:    "steel-melody-215909",
 		BucketName:   "gelato-1571825101",

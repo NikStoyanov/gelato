@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"strings"
 	"sync"
 	"time"
 
+	"cloud.google.com/go/pubsub"
 	"cloud.google.com/go/storage"
 	"github.com/googleapis/gax-go/v2"
 	"google.golang.org/api/compute/v1"
@@ -23,6 +25,7 @@ type Project struct {
 	Location     string
 	Zone         string
 	Scopes       string
+	MsgTopic     *pubsub.Topic
 	MachineSetup Machine
 	Machines     MachineList
 }
@@ -166,11 +169,16 @@ func (p *Project) StartPreVM(ctx context.Context) MachineResponse {
 		return MachineResponse{err.Error()}
 	}
 
-	// Query Master VM to get IP address
+	// Query Master VM to get IP address. The address is then recorded to pubsub.
 	p.Machines.Master.IPAddress, err = p.getComputeInstID(ctx, computeService, p.Machines.Master.Name)
 	if err != nil {
 		return MachineResponse{err.Error()}
 	}
+
+	// Record message in PubSub that the master node is started.
+	// Add the IP server as an attribute
+	// https://godoc.org/cloud.google.com/go/pubsub#Message
+	p.PublishMsg(ctx, p.Machines.Master.Name)
 
 	// Allocate slave machines.
 	p.Machines.Slave = make([]MachineAddress, 0)
@@ -198,9 +206,17 @@ func (p *Project) StartPreVM(ctx context.Context) MachineResponse {
 				IPAddress: nSlaveIP,
 			}
 
-			// Add to the machine list.
 			mux.Lock()
+
+			// Add to the machine list.
 			p.Machines.Slave = append(p.Machines.Slave, nSlave)
+
+			// Add creation message to PubSub.
+			// TODO Send IP address in attributes
+			if err := p.PublishMsg(ctx, nSlave.IPAddress); err != nil {
+				errChannel <- err
+			}
+
 			mux.Unlock()
 			wg.Done()
 		}(machineNum)
